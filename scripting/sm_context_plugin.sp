@@ -5,7 +5,7 @@
 #include <sdktools>
 #include <tf2_stocks>
 
-#define PLUGIN_VERSION "0.1.0"
+#define PLUGIN_VERSION "0.1.1"
 #define MAX_BOUNDARY_NAME 64
 #define MARKER_MODEL "sprites/blueglow1.vmt"
 
@@ -22,6 +22,7 @@ ArrayList g_ActiveVertices[MAXPLAYERS + 1];
 ArrayList g_ActiveMarkers[MAXPLAYERS + 1];
 int g_CaptureRifle[MAXPLAYERS + 1];
 bool g_Capturing[MAXPLAYERS + 1];
+bool g_AttackHeld[MAXPLAYERS + 1];
 
 ArrayList g_BoundaryNames;
 ArrayList g_BoundaryMaps;
@@ -38,7 +39,6 @@ public void OnPluginStart()
     RegConsoleCmd("sm_bcancel", Command_BCancel, "Cancel the active polygon");
     RegConsoleCmd("sm_bundo", Command_BUndo, "Remove the most recent vertex");
 
-    HookEvent("weapon_fire", Event_WeaponFire, EventHookMode_Post);
     HookEvent("player_spawn", Event_PlayerSpawn, EventHookMode_Post);
 
     g_BoundaryNames = new ArrayList(ByteCountToCells(MAX_BOUNDARY_NAME));
@@ -92,6 +92,7 @@ void InitializeClient(int client)
     g_ActiveVertices[client] = new ArrayList(3);
     g_ActiveMarkers[client] = new ArrayList();
     g_Capturing[client] = false;
+    g_AttackHeld[client] = false;
     g_CaptureRifle[client] = INVALID_ENT_REFERENCE;
 }
 
@@ -248,21 +249,37 @@ public Action Timer_GiveCaptureRifle(Handle timer, any userid)
     return Plugin_Stop;
 }
 
-public void Event_WeaponFire(Event event, const char[] name, bool dontBroadcast)
+public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float velocity[3], float angles[3], int &weapon)
 {
-    int client = GetClientOfUserId(event.GetInt("userid"));
-    if (client <= 0 || !g_Capturing[client] || !IsPlayerAlive(client))
+    bool attacking = (buttons & IN_ATTACK) != 0;
+    if (!attacking)
     {
-        return;
+        g_AttackHeld[client] = false;
+        return Plugin_Continue;
     }
 
-    int weapon = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
-    if (weapon <= MaxClients || weapon != EntRefToEntIndex(g_CaptureRifle[client]))
+    if (g_AttackHeld[client] || !g_Capturing[client] || !IsPlayerAlive(client))
     {
-        return;
+        return Plugin_Continue;
+    }
+    g_AttackHeld[client] = true;
+
+    int activeWeapon = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
+    if (activeWeapon <= MaxClients || activeWeapon != EntRefToEntIndex(g_CaptureRifle[client]))
+    {
+        return Plugin_Continue;
+    }
+    if (GetEntPropFloat(activeWeapon, Prop_Send, "m_flNextPrimaryAttack") > GetGameTime())
+    {
+        return Plugin_Continue;
+    }
+    if (GetEntProp(activeWeapon, Prop_Send, "m_iClip1") == 0)
+    {
+        return Plugin_Continue;
     }
 
     CaptureImpact(client);
+    return Plugin_Continue;
 }
 
 void CaptureImpact(int client)
@@ -341,6 +358,7 @@ void ResetCapture(int client, bool removeMarkers)
         return;
     }
     g_Capturing[client] = false;
+    g_AttackHeld[client] = false;
     RemoveCaptureRifle(client);
     if (g_ActiveVertices[client] != null)
     {
