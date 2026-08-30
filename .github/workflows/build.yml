@@ -1,0 +1,23 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  sourcepawn:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download SourceMod
+        run: |
+          mkdir -p vendor/sourcemod
+          SM_ARCHIVE="$(curl -fsSL https://www.sourcemod.net/smdrop/1.12/sourcemod-latest-linux)"
+          curl -fsSL "https://www.sourcemod.net/smdrop/1.12/$SM_ARCHIVE" -o /tmp/sourcemod.tar.gz
+          tar -xzf /tmp/sourcemod.tar.gz -C vendor/sourcemod
+      - name: Compile plugin
+        run: ./scripts/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sm-context-plugin
+          path: build/sm_context_plugin.smx
