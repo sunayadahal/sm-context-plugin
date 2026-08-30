@@ -9,10 +9,11 @@ SourceMod plugin for manually capturing TF2 map-region polygon vertices in game.
 | `/bstart` | Start a boundary and equip a Sniper Rifle regardless of class. |
 | `/bstop [name]` | Store the boundary. Missing names receive the next numeric ID. |
 | `/bexport [name]` | Export a named boundary, or the latest as `map_name:id`. |
+| `/bdelete` | Delete your most recently stored boundary on the current map. |
 | `/bundo` | Remove the latest vertex. |
 | `/bcancel` | Cancel the active boundary. |
 
-While capture is active, every shot from the supplied rifle traces its impact and places a visible sphere marker at the resulting Source coordinate. A boundary requires at least three vertices.
+While capture is active, every shot from the supplied rifle traces its impact and places a visible sphere marker at the resulting Source coordinate. A boundary requires at least three vertices. Finishing it replaces the point markers with a cyan translucent surface and a brighter closed outline. The visualization uses built-in TF2 beam materials, so clients do not need to download custom assets.
 
 Exports are written to:
 

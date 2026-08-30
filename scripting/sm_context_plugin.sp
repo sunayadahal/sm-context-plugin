@@ -5,9 +5,13 @@
 #include <sdktools>
 #include <tf2_stocks>
 
-#define PLUGIN_VERSION "0.1.1"
+#define PLUGIN_VERSION "0.2.0"
 #define MAX_BOUNDARY_NAME 64
 #define MARKER_MODEL "sprites/blueglow1.vmt"
+#define SHADE_MODEL "materials/sprites/laserbeam.vmt"
+#define SHADE_REFRESH 1.0
+#define SHADE_LIFETIME 1.1
+#define SHADE_STRIPS 8
 
 public Plugin myinfo =
 {
@@ -30,6 +34,7 @@ ArrayList g_BoundaryOwners;
 ArrayList g_BoundaryIds;
 ArrayList g_BoundaryVertices;
 int g_NextBoundaryId;
+int g_ShadeModelIndex;
 
 public void OnPluginStart()
 {
@@ -38,6 +43,7 @@ public void OnPluginStart()
     RegConsoleCmd("sm_bexport", Command_BExport, "Export a polygon: sm_bexport [name]");
     RegConsoleCmd("sm_bcancel", Command_BCancel, "Cancel the active polygon");
     RegConsoleCmd("sm_bundo", Command_BUndo, "Remove the most recent vertex");
+    RegConsoleCmd("sm_bdelete", Command_BDelete, "Delete your most recently saved boundary");
 
     HookEvent("player_spawn", Event_PlayerSpawn, EventHookMode_Post);
 
@@ -60,8 +66,10 @@ public void OnPluginStart()
 public void OnMapStart()
 {
     PrecacheModel(MARKER_MODEL, true);
+    g_ShadeModelIndex = PrecacheModel(SHADE_MODEL, true);
     ResetCompletedBoundaries();
     g_NextBoundaryId = 0;
+    CreateTimer(SHADE_REFRESH, Timer_RenderBoundaries, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 }
 
 public void OnMapEnd()
@@ -149,7 +157,10 @@ public Action Command_BStop(int client, int args)
 
     g_Capturing[client] = false;
     g_ActiveVertices[client].Clear();
+    ClearActiveMarkers(client);
     RemoveCaptureRifle(client);
+
+    RenderBoundary(vertices);
 
     ReplyToCommand(client, "[SM Context] Stored boundary '%s' as %s:%d with %d vertices.", name, map, id, count);
     ReplyToCommand(client, "[SM Context] Use /bexport %s, or /bexport to export your latest boundary as %s:%d.", name, map, id);
@@ -228,6 +239,47 @@ public Action Command_BUndo(int client, int args)
     RemoveMarker(reference);
     ReplyToCommand(client, "[SM Context] Removed vertex %d.", length);
     return Plugin_Handled;
+}
+
+public Action Command_BDelete(int client, int args)
+{
+    if (!RequirePlayer(client))
+    {
+        return Plugin_Handled;
+    }
+
+    char map[PLATFORM_MAX_PATH];
+    GetCurrentMap(map, sizeof(map));
+    int index = FindBoundary(client, map, "");
+    if (index == -1)
+    {
+        ReplyToCommand(client, "[SM Context] You have no saved boundary to delete on this map.");
+        return Plugin_Handled;
+    }
+
+    char name[MAX_BOUNDARY_NAME];
+    g_BoundaryNames.GetString(index, name, sizeof(name));
+    int id = g_BoundaryIds.Get(index);
+    ArrayList vertices = view_as<ArrayList>(g_BoundaryVertices.Get(index));
+    delete vertices;
+    g_BoundaryNames.Erase(index);
+    g_BoundaryMaps.Erase(index);
+    g_BoundaryOwners.Erase(index);
+    g_BoundaryIds.Erase(index);
+    g_BoundaryVertices.Erase(index);
+
+    ReplyToCommand(client, "[SM Context] Deleted boundary '%s' (%s:%d). Its shading will disappear now.", name, map, id);
+    return Plugin_Handled;
+}
+
+public Action Timer_RenderBoundaries(Handle timer)
+{
+    for (int i = 0; i < g_BoundaryVertices.Length; i++)
+    {
+        ArrayList vertices = view_as<ArrayList>(g_BoundaryVertices.Get(i));
+        RenderBoundary(vertices);
+    }
+    return Plugin_Continue;
 }
 
 public void Event_PlayerSpawn(Event event, const char[] name, bool dontBroadcast)
@@ -368,13 +420,22 @@ void ResetCapture(int client, bool removeMarkers)
     {
         if (removeMarkers)
         {
-            for (int i = 0; i < g_ActiveMarkers[client].Length; i++)
-            {
-                RemoveMarker(g_ActiveMarkers[client].Get(i));
-            }
+            ClearActiveMarkers(client);
         }
-        g_ActiveMarkers[client].Clear();
+        else
+        {
+            g_ActiveMarkers[client].Clear();
+        }
     }
+}
+
+void ClearActiveMarkers(int client)
+{
+    for (int i = 0; i < g_ActiveMarkers[client].Length; i++)
+    {
+        RemoveMarker(g_ActiveMarkers[client].Get(i));
+    }
+    g_ActiveMarkers[client].Clear();
 }
 
 void RemoveMarker(int reference)
@@ -384,6 +445,62 @@ void RemoveMarker(int reference)
     {
         AcceptEntityInput(entity, "Kill");
     }
+}
+
+void RenderBoundary(ArrayList vertices)
+{
+    if (vertices == null || vertices.Length < 3 || g_ShadeModelIndex <= 0)
+    {
+        return;
+    }
+
+    float center[3] = {0.0, 0.0, 0.0};
+    float current[3], next[3];
+    for (int i = 0; i < vertices.Length; i++)
+    {
+        vertices.GetArray(i, current, 3);
+        center[0] += current[0];
+        center[1] += current[1];
+        center[2] += current[2];
+    }
+    center[0] /= float(vertices.Length);
+    center[1] /= float(vertices.Length);
+    center[2] /= float(vertices.Length);
+
+    int edgeColor[4] = {65, 190, 255, 220};
+    int fillColor[4] = {65, 190, 255, 42};
+    for (int i = 0; i < vertices.Length; i++)
+    {
+        vertices.GetArray(i, current, 3);
+        vertices.GetArray((i + 1) % vertices.Length, next, 3);
+        SendShadeBeam(current, next, 4.0, edgeColor);
+        RenderTriangleFill(center, current, next, fillColor);
+    }
+}
+
+void RenderTriangleFill(const float apex[3], const float edgeStart[3], const float edgeEnd[3], const int color[4])
+{
+    float start[3], end[3];
+    for (int strip = 1; strip <= SHADE_STRIPS; strip++)
+    {
+        float amount = float(strip) / float(SHADE_STRIPS);
+        for (int axis = 0; axis < 3; axis++)
+        {
+            start[axis] = apex[axis] + (edgeStart[axis] - apex[axis]) * amount;
+            end[axis] = apex[axis] + (edgeEnd[axis] - apex[axis]) * amount;
+        }
+        SendShadeBeam(start, end, 12.0, color);
+    }
+}
+
+void SendShadeBeam(const float start[3], const float end[3], float width, const int color[4])
+{
+    if (GetVectorDistance(start, end, true) < 1.0)
+    {
+        return;
+    }
+    TE_SetupBeamPoints(start, end, g_ShadeModelIndex, 0, 0, 0, SHADE_LIFETIME, width, width, 0, 0.0, color, 0);
+    TE_SendToAll();
 }
 
 void ResetCompletedBoundaries()
